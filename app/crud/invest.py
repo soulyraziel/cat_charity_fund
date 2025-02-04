@@ -1,58 +1,37 @@
 from datetime import datetime
 from typing import Union
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.models import CharityProject, Donation
 
 
-async def get_invest_objects(
-    model: Union[CharityProject, Donation],
-    session: AsyncSession
-) -> list[Union[CharityProject, Donation]]:
-    objects = await session.execute(
-        select(model).where(model.fully_invested == 0).order_by(
-            model.id.desc()
+def close_object(
+    target_object: Union[CharityProject, Donation]
+) -> Union[CharityProject, Donation]:
+    target_object.invested_amount = target_object.full_amount
+    target_object.fully_invested = True
+    target_object.close_date = datetime.now()
+    return target_object
+
+
+def invest(
+    target: Union[CharityProject, Donation],
+    sources: list[Union[CharityProject, Donation]]
+) -> tuple[
+    Union[CharityProject, Donation], list[Union[CharityProject, Donation]]
+]:
+    changed_sources = []
+    target.invested_amount = 0
+    for source in sources:
+        sum_to_invest = min(
+            (source.full_amount - source.invested_amount),
+            (target.full_amount - target.invested_amount)
         )
-    )
-    objects = objects.scalars().all()
-    return objects
-
-
-async def close_object(object: Union[CharityProject, Donation]) -> None:
-    object.invested_amount = object.full_amount
-    object.fully_invested = True
-    object.close_date = datetime.now()
-
-
-async def invest(
-    object_in: Union[CharityProject, Donation],
-    session: AsyncSession
-):
-    if isinstance(object_in, Donation):
-        model = CharityProject
-    else:
-        model = Donation
-    objects_to_invest = await get_invest_objects(model, session)
-    object_in_balance = object_in.full_amount
-    while objects_to_invest and object_in_balance > 0:
-        object = objects_to_invest.pop()
-        object_balance = object.full_amount - object.invested_amount
-        if object_balance > object_in_balance:
-            object.invested_amount += object_in_balance
-            object_in_balance = 0
-            await close_object(object_in)
-        elif object_balance == object_in_balance:
-            object_in_balance = 0
-            await close_object(object_in)
-            await close_object(object)
-        else:
-            object_in_balance -= object_balance
-            object_in.invested_amount += object_balance
-            await close_object(object)
-        session.add(object)
-    session.add(object_in)
-    await session.commit()
-    await session.refresh(object_in)
-    return object_in
+        source.invested_amount += sum_to_invest
+        target.invested_amount += sum_to_invest
+        if source.invested_amount == source.full_amount:
+            source = close_object(source)
+        changed_sources.append(source)
+        if target.invested_amount == target.full_amount:
+            target = close_object(target)
+            break
+    return target, changed_sources
